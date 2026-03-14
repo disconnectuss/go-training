@@ -6,10 +6,10 @@ import (
 )
 
 func main() {
-	http.HandleFunc("/hello", func(writer http.ResponseWriter, req *http.Request) {
-		writer.WriteHeader(200)
-	})
-	fmt.Println("hello docker")
+	http.HandleFunc("/hello", handleHello)
+	http.HandleFunc("/users", handleUsers)
+	http.HandleFunc("/users/", handleUserByID)
 
+	fmt.Println("Server running on port 8181...")
 	http.ListenAndServe(":8181", nil)
 }
