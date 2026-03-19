@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -8,35 +9,110 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// setupTestDB creates a fresh in-memory SQLite database for each test
-// ":memory:" means the database lives in RAM — it's destroyed when the test ends
-// This ensures each test starts with a clean state
-func setupTestDB() {
-	initDB(":memory:")
-
-	// Insert test data
-	db.Exec("INSERT INTO users (name, age, city) VALUES (?, ?, ?)", "Fatma", 25, "Istanbul")
-	db.Exec("INSERT INTO users (name, age, city) VALUES (?, ?, ?)", "Ahmet", 30, "Ankara")
+// Step 7: MockStore — a fake UserStore for testing
+// It implements the SAME interface as SQLiteStore, but uses a simple slice
+// No database needed! Tests run faster and are more predictable
+type MockStore struct {
+	users  []User
+	nextID int
 }
 
-// setupRouter creates a Chi router with all routes for testing
-func setupRouter() *chi.Mux {
+// NewMockStore creates a MockStore with some test data
+func NewMockStore() *MockStore {
+	return &MockStore{
+		users: []User{
+			{ID: 1, Name: "Fatma", Age: 25, City: "Istanbul"},
+			{ID: 2, Name: "Ahmet", Age: 30, City: "Ankara"},
+		},
+		nextID: 3,
+	}
+}
+
+// MockStore implements ALL methods of UserStore interface
+// This is what makes Go interfaces powerful — implicit implementation
+
+func (m *MockStore) GetAll(city string) ([]User, error) {
+	if city != "" {
+		var filtered []User
+		for _, u := range m.users {
+			if u.City == city {
+				filtered = append(filtered, u)
+			}
+		}
+		if filtered == nil {
+			filtered = []User{}
+		}
+		return filtered, nil
+	}
+	return m.users, nil
+}
+
+func (m *MockStore) GetByID(id int) (User, error) {
+	for _, u := range m.users {
+		if u.ID == id {
+			return u, nil
+		}
+	}
+	return User{}, fmt.Errorf("user not found")
+}
+
+func (m *MockStore) Create(user User) (User, error) {
+	user.ID = m.nextID
+	m.nextID++
+	m.users = append(m.users, user)
+	return user, nil
+}
+
+func (m *MockStore) Update(id int, updated User) (User, error) {
+	for i := range m.users {
+		if m.users[i].ID == id {
+			if updated.Name != "" {
+				m.users[i].Name = updated.Name
+			}
+			if updated.Age != 0 {
+				m.users[i].Age = updated.Age
+			}
+			if updated.City != "" {
+				m.users[i].City = updated.City
+			}
+			return m.users[i], nil
+		}
+	}
+	return User{}, fmt.Errorf("user not found")
+}
+
+func (m *MockStore) Delete(id int) (string, error) {
+	for i, u := range m.users {
+		if u.ID == id {
+			m.users = append(m.users[:i], m.users[i+1:]...)
+			return u.Name, nil
+		}
+	}
+	return "", fmt.Errorf("user not found")
+}
+
+// setupTestRouter creates a Chi router with a MOCK store
+// No database, no disk, no network — pure in-memory testing
+func setupTestRouter() *chi.Mux {
+	mock := NewMockStore()
+	h := NewHandler(mock) // Inject the mock!
+
 	r := chi.NewRouter()
-	r.Get("/users", getUsers)
-	r.Post("/users", createUser)
-	r.Get("/users/{id}", getUserByID)
-	r.Put("/users/{id}", updateUser)
-	r.Delete("/users/{id}", deleteUser)
+	r.Get("/users", h.getUsers)
+	r.Post("/users", h.createUser)
+	r.Get("/users/{id}", h.getUserByID)
+	r.Put("/users/{id}", h.updateUser)
+	r.Delete("/users/{id}", h.deleteUser)
 	return r
 }
 
-func TestGetUsers(t *testing.T) {
-	setupTestDB()
+// --- All existing tests now use MockStore instead of real SQLite ---
 
+func TestGetUsers(t *testing.T) {
 	req := httptest.NewRequest("GET", "/users", nil)
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Errorf("expected status 200, got %d", rec.Code)
@@ -44,20 +120,18 @@ func TestGetUsers(t *testing.T) {
 
 	body := rec.Body.String()
 	if !strings.Contains(body, "Fatma") {
-		t.Errorf("expected body to contain 'Fatma', got %s", body)
+		t.Errorf("expected 'Fatma', got %s", body)
 	}
 	if !strings.Contains(body, "Ahmet") {
-		t.Errorf("expected body to contain 'Ahmet', got %s", body)
+		t.Errorf("expected 'Ahmet', got %s", body)
 	}
 }
 
 func TestGetUsersFilterByCity(t *testing.T) {
-	setupTestDB()
-
 	req := httptest.NewRequest("GET", "/users?city=Istanbul", nil)
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Errorf("expected status 200, got %d", rec.Code)
@@ -73,13 +147,11 @@ func TestGetUsersFilterByCity(t *testing.T) {
 }
 
 func TestCreateUser(t *testing.T) {
-	setupTestDB()
-
 	jsonBody := `{"name":"Zeynep","age":22,"city":"Izmir"}`
 	req := httptest.NewRequest("POST", "/users", strings.NewReader(jsonBody))
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 201 {
 		t.Errorf("expected status 201, got %d", rec.Code)
@@ -87,45 +159,27 @@ func TestCreateUser(t *testing.T) {
 
 	body := rec.Body.String()
 	if !strings.Contains(body, "Zeynep") {
-		t.Errorf("expected body to contain 'Zeynep', got %s", body)
-	}
-
-	// Verify user count in database
-	var count int
-	db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
-	if count != 3 {
-		t.Errorf("expected 3 users in db, got %d", count)
+		t.Errorf("expected 'Zeynep', got %s", body)
 	}
 }
 
 func TestCreateUserWithoutName(t *testing.T) {
-	setupTestDB()
-
 	jsonBody := `{"age":22,"city":"Izmir"}`
 	req := httptest.NewRequest("POST", "/users", strings.NewReader(jsonBody))
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 400 {
 		t.Errorf("expected status 400, got %d", rec.Code)
 	}
-
-	// Database should still have only 2 users
-	var count int
-	db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
-	if count != 2 {
-		t.Errorf("expected 2 users (unchanged), got %d", count)
-	}
 }
 
 func TestGetUserByID(t *testing.T) {
-	setupTestDB()
-
 	req := httptest.NewRequest("GET", "/users/1", nil)
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Errorf("expected status 200, got %d", rec.Code)
@@ -133,17 +187,15 @@ func TestGetUserByID(t *testing.T) {
 
 	body := rec.Body.String()
 	if !strings.Contains(body, "Fatma") {
-		t.Errorf("expected body to contain 'Fatma', got %s", body)
+		t.Errorf("expected 'Fatma', got %s", body)
 	}
 }
 
 func TestGetUserByIDNotFound(t *testing.T) {
-	setupTestDB()
-
 	req := httptest.NewRequest("GET", "/users/99", nil)
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 404 {
 		t.Errorf("expected status 404, got %d", rec.Code)
@@ -151,13 +203,11 @@ func TestGetUserByIDNotFound(t *testing.T) {
 }
 
 func TestUpdateUser(t *testing.T) {
-	setupTestDB()
-
 	jsonBody := `{"name":"Fatma Updated","city":"Bursa"}`
 	req := httptest.NewRequest("PUT", "/users/1", strings.NewReader(jsonBody))
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Errorf("expected status 200, got %d", rec.Code)
@@ -170,23 +220,14 @@ func TestUpdateUser(t *testing.T) {
 	if !strings.Contains(body, "Bursa") {
 		t.Errorf("expected city 'Bursa', got %s", body)
 	}
-
-	// Verify the change is persisted in the database
-	var name string
-	db.QueryRow("SELECT name FROM users WHERE id = 1").Scan(&name)
-	if name != "Fatma Updated" {
-		t.Errorf("expected db name 'Fatma Updated', got %s", name)
-	}
 }
 
 func TestUpdateUserNotFound(t *testing.T) {
-	setupTestDB()
-
 	jsonBody := `{"name":"Ghost"}`
 	req := httptest.NewRequest("PUT", "/users/99", strings.NewReader(jsonBody))
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 404 {
 		t.Errorf("expected status 404, got %d", rec.Code)
@@ -194,12 +235,10 @@ func TestUpdateUserNotFound(t *testing.T) {
 }
 
 func TestUpdateUserInvalidJSON(t *testing.T) {
-	setupTestDB()
-
 	req := httptest.NewRequest("PUT", "/users/1", strings.NewReader("not json"))
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 400 {
 		t.Errorf("expected status 400, got %d", rec.Code)
@@ -207,52 +246,37 @@ func TestUpdateUserInvalidJSON(t *testing.T) {
 }
 
 func TestDeleteUser(t *testing.T) {
-	setupTestDB()
-
 	req := httptest.NewRequest("DELETE", "/users/1", nil)
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Errorf("expected status 200, got %d", rec.Code)
 	}
 
-	// Verify only 1 user remains
-	var count int
-	db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
-	if count != 1 {
-		t.Errorf("expected 1 user after delete, got %d", count)
+	body := rec.Body.String()
+	if !strings.Contains(body, "Fatma") {
+		t.Errorf("expected deleted user name 'Fatma', got %s", body)
 	}
 }
 
 func TestDeleteUserNotFound(t *testing.T) {
-	setupTestDB()
-
 	req := httptest.NewRequest("DELETE", "/users/99", nil)
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 404 {
 		t.Errorf("expected status 404, got %d", rec.Code)
 	}
-
-	// Database should still have 2 users
-	var count int
-	db.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
-	if count != 2 {
-		t.Errorf("expected 2 users (unchanged), got %d", count)
-	}
 }
 
 func TestMethodNotAllowed(t *testing.T) {
-	setupTestDB()
-
 	req := httptest.NewRequest("PATCH", "/users", nil)
 	rec := httptest.NewRecorder()
 
-	setupRouter().ServeHTTP(rec, req)
+	setupTestRouter().ServeHTTP(rec, req)
 
 	if rec.Code != 405 {
 		t.Errorf("expected status 405, got %d", rec.Code)

@@ -8,34 +8,28 @@ import (
 )
 
 func main() {
-	// Step 4: Initialize the SQLite database
-	// "users.db" is the file where SQLite stores data
-	// If the file doesn't exist, SQLite creates it automatically
-	initDB("users.db")
+	// Step 7: Create the store and inject it into the handler
+	// If we wanted to switch to PostgreSQL, we'd only change THIS line
+	store := NewSQLiteStore("users.db")
+	h := NewHandler(store)
 
 	r := chi.NewRouter()
 
-	// Step 5: Register middleware — they run in order for EVERY request
-	// r.Use() adds middleware to the router's chain
-	// Order matters: Recoverer first (outermost), then Logger
-	// Request flow: Recoverer → Logger → Route Handler → Logger logs → Recoverer catches panics
 	r.Use(Recoverer)
 	r.Use(Logger)
 
-	// Public route — no auth needed
-	r.Get("/hello", handleHello)
+	// Public route
+	r.Get("/hello", h.handleHello)
 
-	// Step 6: Protected routes — API key required
-	// r.Group creates a sub-router that shares the same base path
-	// Middleware added with r.Use inside Group only applies to THIS group
+	// Protected routes — now using h.methodName (method on Handler struct)
 	r.Group(func(r chi.Router) {
-		r.Use(AuthMiddleware) // Only /users routes require API key
+		r.Use(AuthMiddleware)
 
-		r.Get("/users", getUsers)
-		r.Post("/users", createUser)
-		r.Get("/users/{id}", getUserByID)
-		r.Put("/users/{id}", updateUser)
-		r.Delete("/users/{id}", deleteUser)
+		r.Get("/users", h.getUsers)
+		r.Post("/users", h.createUser)
+		r.Get("/users/{id}", h.getUserByID)
+		r.Put("/users/{id}", h.updateUser)
+		r.Delete("/users/{id}", h.deleteUser)
 	})
 
 	fmt.Println("Server running on port 8181...")
