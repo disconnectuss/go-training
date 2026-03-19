@@ -5,45 +5,70 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func handleHello(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Hello! I am a Go application")
 }
 
-func handleUsers(w http.ResponseWriter, r *http.Request) {
+// getUsers returns all users, or filtered by city query parameter
+// Step 4: Now reads from SQLite instead of the in-memory slice
+func getUsers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	switch r.Method {
-	case "GET":
-		getUsers(w, r)
-	case "POST":
-		createUser(w, r)
-	default:
-		w.WriteHeader(405)
-		fmt.Fprintf(w, `{"error":"method not allowed"}`)
-	}
-}
-
-func getUsers(w http.ResponseWriter, r *http.Request) {
 	city := r.URL.Query().Get("city")
 
+	// Build the SQL query based on whether city filter is provided
+	var query string
+	var args []interface{} // args holds the query parameters (prevents SQL injection!)
+
 	if city != "" {
-		var filtered []User
-		for _, user := range users {
-			if user.City == city {
-				filtered = append(filtered, user)
-			}
-		}
-		json.NewEncoder(w).Encode(filtered)
-		return
+		// "?" is a placeholder — SQLite replaces it with the value safely
+		query = "SELECT id, name, age, city FROM users WHERE city = ?"
+		args = append(args, city)
+	} else {
+		query = "SELECT id, name, age, city FROM users"
 	}
 
-	json.NewEncoder(w).Encode(users)
+	// db.Query runs a SELECT and returns multiple rows
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, `{"error":"database error"}`)
+		return
+	}
+	// defer = run this when the function exits (cleanup)
+	// Always close rows to free the database connection!
+	defer rows.Close()
+
+	// Scan each row into a User struct
+	var userList []User
+	for rows.Next() { // Next() moves to the next row, returns false when done
+		var u User
+		// Scan reads column values INTO the variables (order must match SELECT)
+		err := rows.Scan(&u.ID, &u.Name, &u.Age, &u.City)
+		if err != nil {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, `{"error":"scan error"}`)
+			return
+		}
+		userList = append(userList, u)
+	}
+
+	// Return empty array instead of null when no users found
+	if userList == nil {
+		userList = []User{}
+	}
+
+	json.NewEncoder(w).Encode(userList)
 }
 
+// createUser adds a new user to the database
 func createUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
 	var newUser User
 
 	err := json.NewDecoder(r.Body).Decode(&newUser)
@@ -59,45 +84,141 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newUser.ID = nextID
-	nextID++
-	users = append(users, newUser)
+	// db.Exec for INSERT — returns a Result with LastInsertId and RowsAffected
+	result, err := db.Exec(
+		"INSERT INTO users (name, age, city) VALUES (?, ?, ?)",
+		newUser.Name, newUser.Age, newUser.City,
+	)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, `{"error":"database error"}`)
+		return
+	}
+
+	// Get the auto-generated ID from SQLite
+	id, _ := result.LastInsertId()
+	newUser.ID = int(id) // LastInsertId returns int64, we convert to int
 
 	w.WriteHeader(201)
 	json.NewEncoder(w).Encode(newUser)
 }
 
-func deleteUser(w http.ResponseWriter, r *http.Request) {
-	idStr := strings.TrimPrefix(r.URL.Path, "/users/")
-
+// parseID extracts and converts the {id} URL parameter
+func parseID(w http.ResponseWriter, r *http.Request) (int, bool) {
+	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
 		w.WriteHeader(400)
 		fmt.Fprintf(w, `{"error":"invalid id"}`)
+		return 0, false
+	}
+	return id, true
+}
+
+// getUserByID returns a single user from the database
+func getUserByID(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	id, ok := parseID(w, r)
+	if !ok {
 		return
 	}
 
-	for i, user := range users {
-		if user.ID == id {
-			users = append(users[:i], users[i+1:]...)
-			w.WriteHeader(200)
-			fmt.Fprintf(w, `{"message":"user %s deleted"}`, user.Name)
-			return
-		}
+	var u User
+	// QueryRow returns a single row — use when you expect 0 or 1 result
+	err := db.QueryRow(
+		"SELECT id, name, age, city FROM users WHERE id = ?", id,
+	).Scan(&u.ID, &u.Name, &u.Age, &u.City)
+
+	if err != nil {
+		// sql.ErrNoRows means the query returned 0 rows
+		w.WriteHeader(404)
+		fmt.Fprintf(w, `{"error":"user not found"}`)
+		return
 	}
 
-	w.WriteHeader(404)
-	fmt.Fprintf(w, `{"error":"user not found"}`)
+	json.NewEncoder(w).Encode(u)
 }
 
-func handleUserByID(w http.ResponseWriter, r *http.Request) {
+// updateUser updates an existing user in the database
+func updateUser(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	switch r.Method {
-	case "DELETE":
-		deleteUser(w, r)
-	default:
-		w.WriteHeader(405)
-		fmt.Fprintf(w, `{"error":"method not allowed"}`)
+	id, ok := parseID(w, r)
+	if !ok {
+		return
 	}
+
+	var updated User
+	err := json.NewDecoder(r.Body).Decode(&updated)
+	if err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, `{"error":"invalid JSON"}`)
+		return
+	}
+
+	// First check if the user exists
+	var existing User
+	err = db.QueryRow(
+		"SELECT id, name, age, city FROM users WHERE id = ?", id,
+	).Scan(&existing.ID, &existing.Name, &existing.Age, &existing.City)
+	if err != nil {
+		w.WriteHeader(404)
+		fmt.Fprintf(w, `{"error":"user not found"}`)
+		return
+	}
+
+	// Apply partial updates — only change fields that were sent
+	if updated.Name != "" {
+		existing.Name = updated.Name
+	}
+	if updated.Age != 0 {
+		existing.Age = updated.Age
+	}
+	if updated.City != "" {
+		existing.City = updated.City
+	}
+
+	// UPDATE the row in the database
+	_, err = db.Exec(
+		"UPDATE users SET name = ?, age = ?, city = ? WHERE id = ?",
+		existing.Name, existing.Age, existing.City, id,
+	)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, `{"error":"database error"}`)
+		return
+	}
+
+	json.NewEncoder(w).Encode(existing)
+}
+
+// deleteUser removes a user from the database
+func deleteUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+
+	// First get the user name for the response message
+	var name string
+	err := db.QueryRow("SELECT name FROM users WHERE id = ?", id).Scan(&name)
+	if err != nil {
+		w.WriteHeader(404)
+		fmt.Fprintf(w, `{"error":"user not found"}`)
+		return
+	}
+
+	// DELETE the row
+	_, err = db.Exec("DELETE FROM users WHERE id = ?", id)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, `{"error":"database error"}`)
+		return
+	}
+
+	w.WriteHeader(200)
+	fmt.Fprintf(w, `{"message":"user %s deleted"}`, name)
 }
