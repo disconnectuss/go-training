@@ -66,6 +66,7 @@ func getUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // createUser adds a new user to the database
+// Step 6: Now logs WHO created the user using context
 func createUser(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -93,6 +94,12 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		fmt.Fprintf(w, `{"error":"database error"}`)
 		return
+	}
+
+	// Step 6: Log who created the user (from auth context)
+	authUser := GetUserFromContext(r)
+	if authUser != "" {
+		fmt.Printf("User '%s' created by API key owner: %s\n", newUser.Name, authUser)
 	}
 
 	// Get the auto-generated ID from SQLite
