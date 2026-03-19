@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -42,6 +43,32 @@ func writeError(w http.ResponseWriter, err error) {
 
 func (h *Handler) handleHello(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Hello! I am a Go application")
+}
+
+// Step 10: Slow endpoint to demonstrate graceful shutdown
+// When you hit this endpoint and then Ctrl+C, the server waits for it to finish
+//
+// r.Context() carries the request's lifecycle:
+//   - Cancelled when client disconnects
+//   - Cancelled when server.Shutdown() timeout expires
+//
+// select with ctx.Done() lets us REACT to cancellation instead of ignoring it
+func (h *Handler) handleSlow(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context() // Get the request context
+
+	select {
+	case <-time.After(5 * time.Second):
+		// Normal case: 5 seconds pass without cancellation
+		fmt.Fprintf(w, "Slow operation completed!")
+
+	case <-ctx.Done():
+		// Context was cancelled (client disconnected or shutdown timeout)
+		// ctx.Err() tells us WHY:
+		//   context.Canceled         = client disconnected
+		//   context.DeadlineExceeded = timeout expired
+		fmt.Printf("Slow request cancelled: %v\n", ctx.Err())
+		return
+	}
 }
 
 // Compare BEFORE and AFTER:
