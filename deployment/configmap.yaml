@@ -1,0 +1,21 @@
+# Step 13: ConfigMap — externalized configuration
+#
+# ConfigMap stores non-sensitive config as key-value pairs
+# Containers read these as ENVIRONMENT VARIABLES (envFrom in Deployment)
+#
+# Why ConfigMap instead of hardcoding?
+#   - Change config WITHOUT rebuilding the Docker image
+#   - Different configs per environment (dev, staging, prod)
+#   - Config is version-controlled separately from code
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: go-training-config
+  namespace: default
+data:
+  # These become environment variables in the container:
+  # APP_PORT=8181, DB_PATH=/app/data/users.db, etc.
+  APP_PORT: "8181"
+  DB_PATH: "/app/data/users.db"
+  LOG_LEVEL: "info"

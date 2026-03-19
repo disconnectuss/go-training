@@ -1,0 +1,24 @@
+# Step 13: PersistentVolumeClaim — request storage for SQLite database
+#
+# PVC = "I need X amount of persistent storage"
+# Kubernetes finds or creates a PersistentVolume to satisfy this claim
+#
+# Without PVC, pod data lives in the container filesystem
+# → Container restarts = DATA LOST!
+# With PVC, data survives pod restarts, rescheduling, and updates
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: go-training-db-pvc
+  namespace: default
+spec:
+  accessModes:
+    # ReadWriteOnce = only ONE node can mount this volume at a time
+    # Important for SQLite! SQLite doesn't support concurrent writes from multiple nodes
+    # If using PostgreSQL, you wouldn't need this PVC at all
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi  # Request 1 GiB of storage
+  # storageClassName: standard  # Uncomment to specify storage class

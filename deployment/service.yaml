@@ -1,17 +1,27 @@
+# Step 13: Kubernetes Service for go-training
+#
+# Service = stable network endpoint for a set of pods
+# Pods come and go (restarts, scaling, updates), but the Service IP stays the same
+# Service uses labels (app: go-training) to find which pods to send traffic to
+
 apiVersion: v1
 kind: Service
 metadata:
-  creationTimestamp: null
+  name: go-training
+  namespace: default
   labels:
-    app: nginx
-  name: nginx
+    app: go-training
 spec:
+  # ClusterIP = accessible only INSIDE the cluster (default, most secure)
+  # NodePort  = accessible from outside via node IP + port
+  # LoadBalancer = cloud provider creates an external load balancer
+  type: ClusterIP
   ports:
-  - port: 80
+  - port: 80          # Port the Service listens on (inside cluster)
+    targetPort: 8181   # Port on the pod to forward to (our app's port)
     protocol: TCP
-    targetPort: 80
+    name: http
   selector:
-    app: nginx
-  type: NodePort
-status:
-  loadBalancer: {}
+    # Traffic is sent to pods with this label
+    # Must match the labels in Deployment pod template
+    app: go-training

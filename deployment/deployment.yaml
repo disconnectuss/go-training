@@ -1,26 +1,125 @@
-apiVersion: apps/v1
-kind: Deployment
+# Step 13: Kubernetes Deployment for go-training
+#
+# Deployment = "I want N copies of this container running at all times"
+# Kubernetes ensures the desired state is maintained:
+#   - If a pod crashes → K8s restarts it automatically
+#   - If a node dies → K8s reschedules pods to healthy nodes
+#   - Rolling updates → zero-downtime deployments
+
+apiVersion: apps/v1  # API version for Deployment resource
+kind: Deployment     # Resource type
 metadata:
-  creationTimestamp: null
-  labels:
-    app: nginx
-  name: nginx
+  name: go-training
   namespace: default
+  labels:
+    app: go-training  # Labels are key-value tags for organizing resources
 spec:
-  replicas: 1
+  replicas: 2  # Run 2 instances for high availability
   selector:
+    # selector tells K8s which pods belong to THIS deployment
+    # Must match the pod template labels below
     matchLabels:
-      app: nginx
-  strategy: {}
+      app: go-training
+  strategy:
+    # RollingUpdate = replace pods one by one (no downtime!)
+    # K8s creates a new pod, waits until it's healthy, then kills an old one
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # At most 1 extra pod during update (2+1=3 max)
+      maxUnavailable: 0  # Never have fewer than 2 healthy pods during update
   template:
+    # Pod template — every pod created by this deployment looks like this
     metadata:
-      creationTimestamp: null
       labels:
-        app: nginx
-        version: "2"
+        app: go-training  # Must match selector.matchLabels above!
     spec:
       containers:
-      - image: nginx
-        name: nginx
-        resources: {}
-status: {}
+      - name: go-training
+        image: go-training:latest  # Our Docker image from Step 11
+        ports:
+        - containerPort: 8181      # The port our app listens on
+          protocol: TCP
+
+        # --- ENVIRONMENT VARIABLES ---
+        # Instead of hardcoding config, read from ConfigMap
+        # This separates config from code (12-Factor App principle)
+        envFrom:
+        - configMapRef:
+            name: go-training-config  # Reference to our ConfigMap
+
+        # --- HEALTH PROBES ---
+        # Probes tell Kubernetes how to check if our app is alive and ready
+        #
+        # livenessProbe: "Is the process alive?"
+        #   - If FAILS → K8s RESTARTS the pod (process might be deadlocked)
+        #   - Check: Can we reach /hello?
+        livenessProbe:
+          httpGet:
+            path: /hello    # Our public endpoint — no auth needed
+            port: 8181
+          initialDelaySeconds: 5  # Wait 5s after start before first check
+          periodSeconds: 15       # Check every 15 seconds
+          timeoutSeconds: 3       # Fail if no response within 3 seconds
+          failureThreshold: 3     # Restart after 3 consecutive failures
+
+        # readinessProbe: "Is the app ready to serve traffic?"
+        #   - If FAILS → K8s REMOVES pod from Service (no traffic sent to it)
+        #   - Pod is NOT restarted, just temporarily excluded
+        #   - Useful during startup or when temporarily overloaded
+        readinessProbe:
+          httpGet:
+            path: /hello
+            port: 8181
+          initialDelaySeconds: 3  # Start checking earlier than liveness
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 2     # Remove from Service after 2 failures
+
+        # startupProbe: "Has the app finished starting up?"
+        #   - Disables liveness/readiness until startup succeeds
+        #   - Prevents K8s from killing slow-starting apps
+        #   - Total startup budget: failureThreshold × periodSeconds = 30 × 2 = 60s
+        startupProbe:
+          httpGet:
+            path: /hello
+            port: 8181
+          periodSeconds: 2
+          failureThreshold: 30  # Allow up to 60s for startup
+
+        # --- RESOURCE LIMITS ---
+        # resources tell K8s how much CPU/memory this container needs
+        #
+        # requests = MINIMUM guaranteed resources (used for scheduling)
+        #   K8s won't place this pod on a node that doesn't have enough
+        #
+        # limits = MAXIMUM allowed resources (used for enforcement)
+        #   If the container exceeds memory limit → OOMKilled (killed!)
+        #   If the container exceeds CPU limit → throttled (slowed down)
+        resources:
+          requests:
+            cpu: "100m"       # 100 millicores = 0.1 CPU core (minimum)
+            memory: "64Mi"    # 64 MiB RAM (minimum)
+          limits:
+            cpu: "500m"       # 500 millicores = 0.5 CPU core (maximum)
+            memory: "128Mi"   # 128 MiB RAM (maximum)
+
+        # --- VOLUME MOUNT ---
+        # Mount a persistent volume for SQLite database
+        # Without this, data is lost when the pod restarts!
+        volumeMounts:
+        - name: db-storage
+          mountPath: /app/data  # Inside the container
+
+      # --- GRACEFUL SHUTDOWN ---
+      # terminationGracePeriodSeconds: How long K8s waits after sending SIGTERM
+      # before sending SIGKILL (force kill)
+      # Our app has 30s graceful shutdown timeout (Step 10) — give K8s extra buffer
+      terminationGracePeriodSeconds: 45
+
+      # --- VOLUMES ---
+      volumes:
+      - name: db-storage
+        # PersistentVolumeClaim requests storage from the cluster
+        # The actual storage (disk, NFS, cloud) is abstracted away
+        persistentVolumeClaim:
+          claimName: go-training-db-pvc

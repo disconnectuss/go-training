@@ -13,7 +13,10 @@ import (
 )
 
 func main() {
-	store := NewSQLiteStore("users.db")
+	// Step 13: Load config from environment variables (set by Kubernetes ConfigMap)
+	cfg := LoadConfig()
+
+	store := NewSQLiteStore(cfg.DBPath)
 	h := NewHandler(store)
 
 	r := chi.NewRouter()
@@ -55,7 +58,7 @@ func main() {
 	// Create an http.Server with explicit config
 	// Previously we used http.ListenAndServe which creates one internally
 	server := &http.Server{
-		Addr:    ":8181",
+		Addr:    ":" + cfg.Port,
 		Handler: r,
 		// Timeouts prevent slow clients from holding connections forever
 		ReadTimeout:  10 * time.Second, // Max time to read the full request
@@ -77,7 +80,7 @@ func main() {
 	// Start the server in a goroutine so it doesn't block main
 	// We need main to be free to listen for the shutdown signal
 	go func() {
-		fmt.Println("Server running on port 8181...")
+		fmt.Printf("Server running on port %s...\n", cfg.Port)
 		// ListenAndServe blocks until the server is shut down
 		// When Shutdown() is called, it returns http.ErrServerClosed
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
