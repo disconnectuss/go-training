@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -53,7 +52,8 @@ func (m *MockStore) GetByID(id int) (User, error) {
 			return u, nil
 		}
 	}
-	return User{}, fmt.Errorf("user not found")
+	// Step 8: Return AppError so handler gets the correct status code (404)
+	return User{}, ErrNotFound("user")
 }
 
 func (m *MockStore) Create(user User) (User, error) {
@@ -78,7 +78,7 @@ func (m *MockStore) Update(id int, updated User) (User, error) {
 			return m.users[i], nil
 		}
 	}
-	return User{}, fmt.Errorf("user not found")
+	return User{}, ErrNotFound("user")
 }
 
 func (m *MockStore) Delete(id int) (string, error) {
@@ -88,7 +88,7 @@ func (m *MockStore) Delete(id int) (string, error) {
 			return u.Name, nil
 		}
 	}
-	return "", fmt.Errorf("user not found")
+	return "", ErrNotFound("user")
 }
 
 // setupTestRouter creates a Chi router with a MOCK store

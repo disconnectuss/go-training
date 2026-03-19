@@ -2,21 +2,15 @@ package main
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Step 7: SQLiteStore implements the UserStore interface using SQLite
-// It holds a *sql.DB connection — this is called DEPENDENCY INJECTION
-// Instead of using a global variable, we pass the dependency into the struct
 type SQLiteStore struct {
-	db *sql.DB // The database connection is a field, not a global!
+	db *sql.DB
 }
 
-// NewSQLiteStore creates a new SQLiteStore and initializes the database
-// This is a "constructor function" — Go doesn't have constructors, we use functions
 func NewSQLiteStore(dataSourceName string) *SQLiteStore {
 	db, err := sql.Open("sqlite3", dataSourceName)
 	if err != nil {
@@ -41,13 +35,9 @@ func NewSQLiteStore(dataSourceName string) *SQLiteStore {
 		log.Fatal(err)
 	}
 
-	// Return a pointer to the struct — methods below use pointer receiver
 	return &SQLiteStore{db: db}
 }
 
-// GetAll returns all users, or filtered by city if city is not empty
-// This method has a POINTER RECEIVER: (s *SQLiteStore)
-// It means: "this method belongs to *SQLiteStore"
 func (s *SQLiteStore) GetAll(city string) ([]User, error) {
 	var query string
 	var args []interface{}
@@ -59,9 +49,10 @@ func (s *SQLiteStore) GetAll(city string) ([]User, error) {
 		query = "SELECT id, name, age, city FROM users"
 	}
 
-	rows, err := s.db.Query(query, args...) // s.db instead of global db
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return nil, err
+		// Step 8: Return AppError with proper status code instead of raw error
+		return nil, ErrInternal("database error")
 	}
 	defer rows.Close()
 
@@ -70,7 +61,7 @@ func (s *SQLiteStore) GetAll(city string) ([]User, error) {
 		var u User
 		err := rows.Scan(&u.ID, &u.Name, &u.Age, &u.City)
 		if err != nil {
-			return nil, err
+			return nil, ErrInternal("scan error")
 		}
 		users = append(users, u)
 	}
@@ -81,26 +72,28 @@ func (s *SQLiteStore) GetAll(city string) ([]User, error) {
 	return users, nil
 }
 
-// GetByID returns a single user by their ID
 func (s *SQLiteStore) GetByID(id int) (User, error) {
 	var u User
 	err := s.db.QueryRow(
 		"SELECT id, name, age, city FROM users WHERE id = ?", id,
 	).Scan(&u.ID, &u.Name, &u.Age, &u.City)
 	if err != nil {
-		return User{}, fmt.Errorf("user not found")
+		if err == sql.ErrNoRows {
+			// Step 8: Not found → 404, not a generic error
+			return User{}, ErrNotFound("user")
+		}
+		return User{}, ErrInternal("database error")
 	}
 	return u, nil
 }
 
-// Create inserts a new user and returns it with the generated ID
 func (s *SQLiteStore) Create(user User) (User, error) {
 	result, err := s.db.Exec(
 		"INSERT INTO users (name, age, city) VALUES (?, ?, ?)",
 		user.Name, user.Age, user.City,
 	)
 	if err != nil {
-		return User{}, err
+		return User{}, ErrInternal("database error")
 	}
 
 	id, _ := result.LastInsertId()
@@ -108,15 +101,12 @@ func (s *SQLiteStore) Create(user User) (User, error) {
 	return user, nil
 }
 
-// Update modifies an existing user's fields (partial update)
 func (s *SQLiteStore) Update(id int, updated User) (User, error) {
-	// First get the existing user
-	existing, err := s.GetByID(id) // We can call our own methods!
+	existing, err := s.GetByID(id)
 	if err != nil {
-		return User{}, err
+		return User{}, err // Already an AppError from GetByID
 	}
 
-	// Apply partial updates
 	if updated.Name != "" {
 		existing.Name = updated.Name
 	}
@@ -132,23 +122,25 @@ func (s *SQLiteStore) Update(id int, updated User) (User, error) {
 		existing.Name, existing.Age, existing.City, id,
 	)
 	if err != nil {
-		return User{}, err
+		return User{}, ErrInternal("database error")
 	}
 
 	return existing, nil
 }
 
-// Delete removes a user and returns their name
 func (s *SQLiteStore) Delete(id int) (string, error) {
 	var name string
 	err := s.db.QueryRow("SELECT name FROM users WHERE id = ?", id).Scan(&name)
 	if err != nil {
-		return "", fmt.Errorf("user not found")
+		if err == sql.ErrNoRows {
+			return "", ErrNotFound("user")
+		}
+		return "", ErrInternal("database error")
 	}
 
 	_, err = s.db.Exec("DELETE FROM users WHERE id = ?", id)
 	if err != nil {
-		return "", err
+		return "", ErrInternal("database error")
 	}
 
 	return name, nil
