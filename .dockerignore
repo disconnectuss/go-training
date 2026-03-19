@@ -1,0 +1,25 @@
+# Step 11: .dockerignore — files excluded from Docker build context
+# Like .gitignore but for Docker. Reduces build context size and speed.
+
+# Database files (we create fresh in container)
+*.db
+
+# Test files (not needed in production)
+*_test.go
+
+# Git history
+.git
+.gitignore
+
+# IDE files
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+
+# Kubernetes manifests (not needed inside the container)
+deployment/
+
+# CI files
+Jenkinsfile
