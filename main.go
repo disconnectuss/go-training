@@ -32,6 +32,14 @@ func main() {
 		r.Delete("/users/{id}", h.deleteUser)
 	})
 
+	// Step 9: Run startup tasks concurrently using goroutines
+	// In a real app, you might load config, warm caches, check dependencies, etc.
+	go func() {
+		fmt.Println("Background: checking database health...")
+		users, _ := store.GetAll("")
+		fmt.Printf("Background: database OK — %d users loaded\n", len(users))
+	}()
+
 	fmt.Println("Server running on port 8181...")
 	http.ListenAndServe(":8181", r)
 }
